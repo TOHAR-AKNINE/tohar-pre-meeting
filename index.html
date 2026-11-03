@@ -134,6 +134,12 @@
   }
   .check svg{width:34px;height:34px;stroke:#FBF3E6;stroke-width:3;fill:none;stroke-linecap:round;stroke-linejoin:round}
   .thanks h2{font-size:1.7rem;font-weight:800;color:var(--espresso);margin-bottom:8px}
+  [hidden]{display:none !important}
+  .text-btn{
+    background:none;border:none;cursor:pointer;align-self:center;
+    font-family:'Assistant',sans-serif;font-size:.98rem;font-weight:700;
+    color:var(--brown);text-decoration:underline;text-underline-offset:4px;padding:4px;
+  }
   .btn.wa{margin-top:22px;background:linear-gradient(135deg, #2E7D4F 0%, #1E5A37 100%)}
   .thanks p{font-size:1.1rem;font-weight:600;color:var(--ink-soft)}
   .status{min-height:22px;text-align:center;font-size:1rem;font-weight:700}
@@ -213,8 +219,10 @@
     </div>
 
     <input type="text" class="hp" id="website" tabindex="-1" autocomplete="off" aria-hidden="true">
-    <button class="btn" type="submit" id="sendBtn">שליחת התשובות לטוהר</button>
+    <button class="btn" type="submit" id="sendBtn">שליחת התשובות לטוהר כ-PDF</button>
     <div class="status" id="status" role="alert"></div>
+    <button class="btn wa" type="button" id="shareBtn" hidden>שליחת ה-PDF בוואטסאפ</button>
+    <button class="text-btn" type="button" id="textBtn">או שליחה כהודעת טקסט רגילה בוואטסאפ</button>
   </form>
 
   <section class="thanks" id="thanks" hidden>
@@ -232,6 +240,7 @@
   <footer>טוהר אקנין · תהליכי שיווק</footer>
 </div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script>
 // the Google Apps Script web-app address (see הוראות הפעלה.md); while empty, answers go via WhatsApp
 const SCRIPT_URL = "";
@@ -285,14 +294,152 @@ function openWhatsApp(){
   window.open("https://wa.me/" + WA_NUMBER + "?text=" + encodeURIComponent(whatsappText()), "_blank");
 }
 
+/* ---------- PDF of the answers, drawn on canvas (keeps Hebrew text shaping correct) ---------- */
+const PAGE_W = 1240, PAGE_H = 1754, M = 100;
+let pdfFile = null;
+
+function loadImg(src){
+  return new Promise((ok, bad) => { const i = new Image(); i.onload = () => ok(i); i.onerror = bad; i.src = src; });
+}
+
+function wrapLines(ctx, text, maxW){
+  const out = [];
+  String(text).split("\n").forEach(par => {
+    let line = "";
+    par.split(/\s+/).filter(Boolean).forEach(word => {
+      const test = line ? line + " " + word : word;
+      if (line && ctx.measureText(test).width > maxW){ out.push(line); line = word; }
+      else line = test;
+    });
+    out.push(line);
+  });
+  return out;
+}
+
+async function buildPdf(){
+  await Promise.all([document.fonts.load("800 36px Assistant"), document.fonts.load("500 32px Assistant")]);
+  const logo = await loadImg("logo.jpg").catch(() => null);
+  const name = $("name").value.trim();
+  const date = new Date().toLocaleDateString("he-IL");
+  const pages = [];
+  let ctx, y;
+  const newPage = () => {
+    const c = document.createElement("canvas");
+    c.width = PAGE_W; c.height = PAGE_H;
+    ctx = c.getContext("2d");
+    ctx.fillStyle = "#FBF7F0"; ctx.fillRect(0, 0, PAGE_W, PAGE_H);
+    ctx.direction = "rtl"; ctx.textAlign = "right"; ctx.textBaseline = "top";
+    pages.push(c); y = M;
+  };
+  newPage();
+
+  const g = ctx.createLinearGradient(0, 0, PAGE_W, 300);
+  g.addColorStop(0, "#5C3317"); g.addColorStop(1, "#2A1A10");
+  ctx.fillStyle = g; ctx.fillRect(0, 0, PAGE_W, 300);
+  ctx.fillStyle = "#9A5B2C"; ctx.fillRect(0, 300, PAGE_W, 12);
+  if (logo) ctx.drawImage(logo, M, 65, 170, 170);
+  ctx.fillStyle = "#FBF3E6"; ctx.font = "800 64px Assistant";
+  ctx.fillText("שאלון לפני פגישה", PAGE_W - M, 85);
+  ctx.fillStyle = "#D9A066"; ctx.font = "700 36px Assistant";
+  ctx.fillText(name + " · " + date, PAGE_W - M, 180);
+  y = 390;
+
+  const textW = PAGE_W - 2 * M - 30;
+  const block = (title, body) => {
+    ctx.font = "800 36px Assistant";
+    const tl = wrapLines(ctx, title, textW);
+    ctx.font = "500 32px Assistant";
+    const bl = wrapLines(ctx, body || "—", textW);
+    if (y + tl.length * 50 + 14 + Math.min(bl.length, 3) * 46 > PAGE_H - M) newPage();
+    ctx.fillStyle = "#5C3317"; ctx.fillRect(PAGE_W - M - 8, y, 8, tl.length * 50 - 8);
+    ctx.font = "800 36px Assistant";
+    tl.forEach(l => { ctx.fillText(l, PAGE_W - M - 30, y); y += 50; });
+    y += 14;
+    bl.forEach(l => {
+      if (y + 46 > PAGE_H - M) newPage();
+      ctx.font = "500 32px Assistant"; ctx.fillStyle = "#2A1A10";
+      ctx.fillText(l, PAGE_W - M - 30, y); y += 46;
+    });
+    y += 44;
+  };
+  QUESTIONS.forEach(([id], i) => {
+    const full = document.querySelector('label[for="' + id + '"] > span:last-child').textContent;
+    block((i + 1) + ". " + full, $(id).value.trim());
+  });
+  const link = $("link").value.trim();
+  if (link) block("קישור לעמוד העסקי", link);
+
+  pages.forEach((c, i) => {
+    const p = c.getContext("2d");
+    p.textAlign = "center"; p.direction = "rtl"; p.textBaseline = "alphabetic";
+    p.fillStyle = "#8A7563"; p.font = "600 26px Assistant";
+    p.fillText("טוהר אקנין · תהליכי שיווק" + (pages.length > 1 ? "  ·  " + (i + 1) + "/" + pages.length : ""), PAGE_W / 2, PAGE_H - 50);
+  });
+
+  const pdf = new window.jspdf.jsPDF({ unit: "mm", format: "a4" });
+  pages.forEach((c, i) => {
+    if (i) pdf.addPage();
+    pdf.addImage(c.toDataURL("image/jpeg", 0.9), "JPEG", 0, 0, 210, 297);
+  });
+  return new File([pdf.output("blob")], "שאלון לפני פגישה - " + name + ".pdf", { type: "application/pdf" });
+}
+
+function downloadFile(file){
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(file);
+  a.download = file.name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+
+async function sharePdf(){
+  try {
+    await navigator.share({ files: [pdfFile], title: "שאלון לפני פגישה", text: "שאלון לפני פגישה · " + $("name").value.trim() });
+    $("shareBtn").hidden = true;
+    setStatus("מעולה! אם עוד לא שלחת, בחרי בוואטסאפ את טוהר ולחצי שליחה 🤍", "ok");
+  } catch (err) {
+    if (err.name === "AbortError"){ setStatus("השליחה בוטלה. אפשר ללחוץ שוב על הכפתור.", ""); $("shareBtn").hidden = false; }
+    else { $("shareBtn").hidden = false; setStatus("ה-PDF מוכן! לחצי על הכפתור הירוק כדי לשלוח אותו בוואטסאפ", "ok"); }
+  }
+}
+
+async function sendPdfToWhatsApp(){
+  const btn = $("sendBtn");
+  btn.disabled = true;
+  setStatus("מכינה את ה-PDF...");
+  try {
+    pdfFile = await buildPdf();
+  } catch (err) {
+    btn.disabled = false;
+    openWhatsApp();
+    setStatus("נפתח וואטסאפ עם התשובות שלך, רק ללחוץ שם על שליחה 🤍", "ok");
+    return;
+  }
+  btn.disabled = false;
+  if (navigator.canShare && navigator.canShare({ files: [pdfFile] })){
+    setStatus("בוחרים וואטסאפ ← טוהר ← שליחה", "ok");
+    await sharePdf();
+  } else {
+    // computers usually can't share files straight into WhatsApp: save the PDF and open WhatsApp with the text
+    downloadFile(pdfFile);
+    openWhatsApp();
+    setStatus("ה-PDF נשמר במחשב שלך ונפתח וואטסאפ עם התשובות. אפשר לצרף שם את ה-PDF 📎", "ok");
+  }
+}
+
 $("waBtn").addEventListener("click", openWhatsApp);
+$("shareBtn").addEventListener("click", sharePdf);
+$("textBtn").addEventListener("click", () => {
+  if (!validate()) return;
+  openWhatsApp();
+  setStatus("נפתח וואטסאפ עם התשובות שלך, רק ללחוץ שם על שליחה 🤍", "ok");
+});
 
 $("qForm").addEventListener("submit", async e => {
   e.preventDefault();
   if (!validate()) return;
   if (!SCRIPT_URL){
-    openWhatsApp();
-    setStatus("נפתח וואטסאפ עם התשובות שלך, רק ללחוץ שם על שליחה 🤍", "ok");
+    await sendPdfToWhatsApp();
     return;
   }
   const payload = { name: $("name").value.trim(), link: $("link").value.trim(), website: $("website").value };
